@@ -1,0 +1,25 @@
+{
+  "name": "nano-banana-slack-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.1.8",
+  "scripts": {
+    "dev": "bunx wrangler dev --local --var ENV:\"dev\"",
+    "deploy": "bunx wrangler deploy",
+    "types": "bunx wrangler types",
+    "check": "bunx tsc -p tsconfig.json --noEmit",
+    "gemini:local": "bun run scripts/gemini-local.ts",
+    "icon:make": "bun run scripts/make-icon.ts"
+    ,
+    "logs:start": "mkdir -p .logs && nohup bunx wrangler tail --format=pretty > .logs/worker-tail.log 2>&1 & echo $! > .logs/tail.pid && echo 'tail PID:' $(cat .logs/tail.pid)",
+    "logs:stop": "test -f .logs/tail.pid && kill $(cat .logs/tail.pid) && rm -f .logs/tail.pid || echo 'no tail pid'",
+    "logs:status": "test -f .logs/tail.pid && ps -p $(cat .logs/tail.pid) -o pid,etime,cmd || echo 'no tail pid'",
+    "logs:follow": "tail -f .logs/worker-tail.log"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240821.0",
+    "typescript": "^5.5.4",
+    "wrangler": "^4.33.1"
+  }
+}

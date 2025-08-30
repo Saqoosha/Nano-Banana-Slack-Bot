@@ -1,0 +1,26 @@
+name = "nano-banana-slack-bot"
+main = "src/worker.ts"
+compatibility_date = "2024-08-29"
+account_id = "c21a10f70a8036d2ad10687ab83bfb4b" # Whatever Co.
+
+[vars]
+ENV = "dev"
+LOG_LEVEL = "debug"
+REACTION_NAME = "banana"
+
+[[kv_namespaces]]
+binding = "nano_banana_dedup"
+id = "8a6574e3276d4db288cf8df067c22528"
+
+[env.preview]
+[[env.preview.kv_namespaces]]
+binding = "nano_banana_dedup"
+id = "865fdd4a5d974faca00da0b9d3e940cc"
+
+# Secrets (set with: `bunx wrangler secret put SLACK_SIGNING_SECRET` etc.)
+# - SLACK_SIGNING_SECRET
+# - SLACK_BOT_TOKEN (if calling Slack Web API)
+# - GEMINI_API_KEY (if using Gemini for image editing)
+
+[observability]
+enabled = true

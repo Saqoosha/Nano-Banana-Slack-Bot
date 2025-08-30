@@ -1,0 +1,14 @@
+# Node/Bun
+node_modules/
+*.log
+
+# Cloudflare
+.wrangler/
+
+# Local env
+.dev.vars
+.env
+.env.*
+
+# macOS
+.DS_Store

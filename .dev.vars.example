@@ -1,0 +1,6 @@
+# Local-only secrets for `wrangler dev`
+# Copy to `.dev.vars` and fill real values. Do NOT commit `.dev.vars`.
+
+SLACK_SIGNING_SECRET="your-slack-signing-secret"
+SLACK_BOT_TOKEN="xoxb-your-bot-token"
+GEMINI_API_KEY="your-gemini-api-key"
