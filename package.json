@@ -10,8 +10,9 @@
     "types": "bunx wrangler types",
     "check": "bunx tsc -p tsconfig.json --noEmit",
     "gemini:local": "bun run scripts/gemini-local.ts",
-    "icon:make": "bun run scripts/make-icon.ts"
-    ,
+    "icon:make": "bun run scripts/make-icon.ts",
+    "gemini:check-two": "bun run scripts/gemini-check-two-images.ts"
+  ,
     "logs:start": "mkdir -p .logs && nohup bunx wrangler tail --format=pretty > .logs/worker-tail.log 2>&1 & echo $! > .logs/tail.pid && echo 'tail PID:' $(cat .logs/tail.pid)",
     "logs:stop": "test -f .logs/tail.pid && kill $(cat .logs/tail.pid) && rm -f .logs/tail.pid || echo 'no tail pid'",
     "logs:status": "test -f .logs/tail.pid && ps -p $(cat .logs/tail.pid) -o pid,etime,cmd || echo 'no tail pid'",

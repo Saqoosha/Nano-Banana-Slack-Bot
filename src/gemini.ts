@@ -40,7 +40,7 @@ export async function transformImage(bytes: ArrayBuffer, mime: string, prompt: s
         ]
       }
     ],
-    generationConfig: { responseModalities: [ 'IMAGE' ] }
+    generationConfig: { responseModalities: ['IMAGE'] }
   }
   const res = await fetch(endpoint, {
     method: 'POST',
@@ -48,7 +48,6 @@ export async function transformImage(bytes: ArrayBuffer, mime: string, prompt: s
     body: JSON.stringify(body)
   })
   const json = await res.json()
-  // Try snake_case then camelCase just in case
   const parts = json?.candidates?.[0]?.content?.parts || []
   const imagePart = parts.find((p: any) => p?.inline_data?.data) || parts.find((p: any) => p?.inlineData?.data)
   const outB64 = imagePart?.inline_data?.data || imagePart?.inlineData?.data
@@ -58,20 +57,10 @@ export async function transformImage(bytes: ArrayBuffer, mime: string, prompt: s
   const model = json?.modelVersion || json?.model_version
   if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:res', { gid, status: res.status, gotImage: !!outB64, finishReason: finish || 'n/a', blockReason: block || 'n/a', model })
   if (!outB64) {
-    // Extract diagnostics for easier debugging in logs/Slack
     const textPart = parts.find((p: any) => typeof p?.text === 'string')
     const textSample = (textPart?.text || '').toString().slice(0, 200)
     if (shouldLog('error', opts?.logLevel)) logError('gemini:no_inline_image', new Error('no_inline_image'), { gid, httpStatus: res.status, finishReason: finish || 'n/a', blockReason: block || 'n/a', textPreview: textSample, model, usage })
-    const detail = {
-      reason: 'no_inline_image',
-      httpStatus: res.status,
-      finishReason: finish || 'n/a',
-      blockReason: block || 'n/a',
-      textPreview: textSample,
-      model,
-      usage
-    }
-    throw new Error(`Gemini did not return an image (no inline_data). detail=${JSON.stringify(detail)}`)
+    throw new Error(`Gemini did not return an image (no inline_data). detail=${JSON.stringify({ httpStatus: res.status, finishReason: finish || 'n/a', blockReason: block || 'n/a' })}`)
   }
   return fromBase64(outB64 as string)
 }
@@ -89,21 +78,12 @@ export async function transformImagesCombined(
   const promptTrim = (prompt || '').toString()
   if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:req', { gid, mode: 'combined', images: images.length, promptLen: promptTrim.length, totalBytes: total })
   if (shouldLog('debug', opts?.logLevel)) log('debug', 'gemini:req:detail', { gid, promptSample: promptTrim.slice(0, 80) })
-  const parts: any[] = []
-  for (const img of images) {
-    parts.push({ inline_data: { mime_type: img.mime, data: toBase64(img.bytes) } })
-  }
-  parts.push({ text: prompt })
 
-  const body = {
-    contents: [ { parts } ],
-    generationConfig: { responseModalities: ['IMAGE'] }
-  }
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
-    body: JSON.stringify(body)
-  })
+  const parts: any[] = [ { text: prompt } ]
+  for (const img of images) parts.push({ inline_data: { mime_type: img.mime, data: toBase64(img.bytes) } })
+
+  const body = { contents: [ { parts } ], generationConfig: { responseModalities: ['IMAGE'] } }
+  const res = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify(body) })
   const json = await res.json()
   const partsOut = json?.candidates?.[0]?.content?.parts || []
   const imagePart = partsOut.find((p: any) => p?.inline_data?.data) || partsOut.find((p: any) => p?.inlineData?.data)
@@ -114,8 +94,9 @@ export async function transformImagesCombined(
   const usage = json?.usageMetadata || json?.usage_metadata
   if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:res', { gid, status: res.status, gotImage: !!outB64, finishReason: finish || 'n/a', blockReason: block || 'n/a', model })
   if (!outB64) {
-    if (shouldLog('error', opts?.logLevel)) logError('gemini:no_inline_image:combined', new Error('no_inline_image'), { gid, httpStatus: res.status, finishReason: finish || 'n/a', blockReason: block || 'n/a', model, usage })
-    throw new Error(`Gemini combined request returned no image. detail=${JSON.stringify({ httpStatus: res.status, finishReason: finish, blockReason: block })}`)
+    const errMsg = json?.error?.message
+    if (shouldLog('error', opts?.logLevel)) logError('gemini:no_inline_image:combined', new Error('no_inline_image'), { gid, httpStatus: res.status, errMsg, model, usage })
+    throw new Error(`Gemini combined request returned no image. detail=${JSON.stringify({ httpStatus: res.status, errMsg })}`)
   }
   return fromBase64(outB64 as string)
 }
@@ -126,10 +107,7 @@ export async function generateImage(prompt: string, apiKey: string, opts?: Gemin
   const promptTrim = (prompt || '').toString()
   if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:req', { gid, mode: 'text-only', promptLen: promptTrim.length })
   if (shouldLog('debug', opts?.logLevel)) log('debug', 'gemini:req:detail', { gid, promptSample: promptTrim.slice(0, 80) })
-  const body = {
-    contents: [ { parts: [ { text: prompt } ] } ],
-    generationConfig: { responseModalities: ['IMAGE'] }
-  }
+  const body = { contents: [ { parts: [ { text: prompt } ] } ], generationConfig: { responseModalities: ['IMAGE'] } }
   const res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
