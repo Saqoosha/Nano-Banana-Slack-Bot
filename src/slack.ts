@@ -6,7 +6,6 @@ export type Env = {
   ENV?: string
   LOG_LEVEL?: string
   REACTION_NAME?: string
-  MAX_IMAGES?: string
   nano_banana_dedup: any
 }
 
