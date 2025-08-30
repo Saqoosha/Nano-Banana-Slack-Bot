@@ -56,13 +56,27 @@ export async function transformImage(bytes: ArrayBuffer, mime: string, prompt: s
   const usage = json?.usageMetadata || json?.usage_metadata
   const model = json?.modelVersion || json?.model_version
   if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:res', { gid, status: res.status, gotImage: !!outB64, finishReason: finish || 'n/a', blockReason: block || 'n/a', model })
-  if (!outB64) {
-    const textPart = parts.find((p: any) => typeof p?.text === 'string')
-    const textSample = (textPart?.text || '').toString().slice(0, 200)
-    if (shouldLog('error', opts?.logLevel)) logError('gemini:no_inline_image', new Error('no_inline_image'), { gid, httpStatus: res.status, finishReason: finish || 'n/a', blockReason: block || 'n/a', textPreview: textSample, model, usage })
-    throw new Error(`Gemini did not return an image (no inline_data). detail=${JSON.stringify({ httpStatus: res.status, finishReason: finish || 'n/a', blockReason: block || 'n/a' })}`)
+  if (outB64) return fromBase64(outB64 as string)
+  // Fallback once: allow TEXT,IMAGE to nudge image emission
+  if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:fallback', { gid, mode: 'single', to: 'TEXT,IMAGE' })
+  const body2 = {
+    contents: [ { parts: [ { text: prompt }, { inline_data: { mime_type: mime, data } } ] } ],
+    generationConfig: { responseModalities: ['TEXT','IMAGE'] }
   }
-  return fromBase64(outB64 as string)
+  const res2 = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify(body2) })
+  const json2 = await res2.json()
+  const parts2 = json2?.candidates?.[0]?.content?.parts || []
+  const imagePart2 = parts2.find((p: any) => p?.inline_data?.data) || parts2.find((p: any) => p?.inlineData?.data)
+  const outB642 = imagePart2?.inline_data?.data || imagePart2?.inlineData?.data
+  const finish2 = json2?.candidates?.[0]?.finishReason || json2?.candidates?.[0]?.finish_reason
+  if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:res', { gid, status: res2.status, gotImage: !!outB642, finishReason: finish2 || 'n/a' })
+  if (!outB642) {
+    const textPart = parts2.find((p: any) => typeof p?.text === 'string')
+    const textSample = (textPart?.text || '').toString().slice(0, 200)
+    if (shouldLog('error', opts?.logLevel)) logError('gemini:no_inline_image', new Error('no_inline_image'), { gid, httpStatus: res2.status, textPreview: textSample })
+    throw new Error(`Gemini did not return an image (fallback). http=${res2.status}`)
+  }
+  return fromBase64(outB642 as string)
 }
 
 // Combine multiple input images into a single request and return ONE output image.
@@ -86,17 +100,25 @@ export async function transformImagesCombined(
   const res = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify(body) })
   const json = await res.json()
   const partsOut = json?.candidates?.[0]?.content?.parts || []
-  const imagePart = partsOut.find((p: any) => p?.inline_data?.data) || partsOut.find((p: any) => p?.inlineData?.data)
-  const outB64 = imagePart?.inline_data?.data || imagePart?.inlineData?.data
-  const finish = json?.candidates?.[0]?.finishReason || json?.candidates?.[0]?.finish_reason
-  const block = json?.promptFeedback?.blockReason || json?.prompt_feedback?.block_reason
+  let imagePart = partsOut.find((p: any) => p?.inline_data?.data) || partsOut.find((p: any) => p?.inlineData?.data)
+  let outB64 = imagePart?.inline_data?.data || imagePart?.inlineData?.data
+  const finish = json?.candidates?.[0]?.content ? (json?.candidates?.[0]?.finishReason || json?.candidates?.[0]?.finish_reason) : undefined
   const model = json?.modelVersion || json?.model_version
-  const usage = json?.usageMetadata || json?.usage_metadata
-  if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:res', { gid, status: res.status, gotImage: !!outB64, finishReason: finish || 'n/a', blockReason: block || 'n/a', model })
+  if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:res', { gid, status: res.status, gotImage: !!outB64, finishReason: finish || 'n/a', model })
   if (!outB64) {
-    const errMsg = json?.error?.message
-    if (shouldLog('error', opts?.logLevel)) logError('gemini:no_inline_image:combined', new Error('no_inline_image'), { gid, httpStatus: res.status, errMsg, model, usage })
-    throw new Error(`Gemini combined request returned no image. detail=${JSON.stringify({ httpStatus: res.status, errMsg })}`)
+    if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:fallback', { gid, mode: 'combined', to: 'TEXT,IMAGE' })
+    const body2 = { contents: [ { parts } ], generationConfig: { responseModalities: ['TEXT','IMAGE'] } }
+    const res2 = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify(body2) })
+    const json2 = await res2.json()
+    const partsOut2 = json2?.candidates?.[0]?.content?.parts || []
+    const ip2 = partsOut2.find((p: any) => p?.inline_data?.data) || partsOut2.find((p: any) => p?.inlineData?.data)
+    const b642 = ip2?.inline_data?.data || ip2?.inlineData?.data
+    if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:res', { gid, status: res2.status, gotImage: !!b642 })
+    if (!b642) {
+      if (shouldLog('error', opts?.logLevel)) logError('gemini:no_inline_image:combined', new Error('no_inline_image'), { gid, httpStatus: res2.status })
+      throw new Error(`Gemini combined request returned no image (fallback). http=${res2.status}`)
+    }
+    outB64 = b642
   }
   return fromBase64(outB64 as string)
 }
