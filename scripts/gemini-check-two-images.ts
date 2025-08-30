@@ -77,12 +77,20 @@ async function attempt(label: string, parts: any[], bodyExtra: any): Promise<Att
   return { ok: true, status: res.status, gotImage: true, out: Buffer.from(outB64, 'base64') }
 }
 
+function enforceImageOnly(text: string): string {
+  const t = (text || '').toString().trim()
+  const ja = '出力は画像のみ。'
+  if (t.includes(ja)) return t
+  if (/image\s*only/i.test(t)) return t
+  return t.length > 0 ? `${t} ${ja}` : ja
+}
+
 async function main() {
   const f1 = await Bun.file(img1Path).arrayBuffer()
   const f2 = await Bun.file(img2Path).arrayBuffer()
   const m1 = extToMime(img1Path)
   const m2 = extToMime(img2Path)
-  const pText = prompt
+  const pText = enforceImageOnly(prompt)
 
   const partsImagesFirst = [
     { inline_data: { mime_type: m1, data: toBase64(f1) } },
@@ -95,8 +103,11 @@ async function main() {
     { inline_data: { mime_type: m2, data: toBase64(f2) } }
   ]
 
-// Simplified: keep only the success pattern (text-first + modalities)
-let r = await attempt('C(text-first + modalities)', partsTextFirst, { generationConfig: { responseModalities: ['IMAGE'] } })
+// Success pattern with one fallback: IMAGE only -> TEXT+IMAGE
+let r = await attempt('A(text-first + IMAGE)', partsTextFirst, { generationConfig: { responseModalities: ['IMAGE'] } })
+if (!r.ok || !r.gotImage) {
+  r = await attempt('B(text-first + TEXT,IMAGE)', partsTextFirst, { generationConfig: { responseModalities: ['TEXT','IMAGE'] } })
+}
   if (!r.ok || !r.gotImage || !r.out) {
     console.error('Failed to get image from all attempts.')
     process.exit(2)
