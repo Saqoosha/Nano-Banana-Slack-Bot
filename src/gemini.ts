@@ -1,5 +1,11 @@
 // Minimal Gemini image transform for Workers runtime
 // Sends an input image and prompt; returns generated image bytes (PNG)
+import { log, logError, shouldLog } from './log'
+
+type GeminiOpts = {
+  logLevel?: string
+  traceId?: string
+}
 
 const endpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent"
 
@@ -18,7 +24,12 @@ const fromBase64 = (b64: string): Uint8Array => {
   return out
 }
 
-export async function transformImage(bytes: ArrayBuffer, mime: string, prompt: string, apiKey: string): Promise<Uint8Array> {
+export async function transformImage(bytes: ArrayBuffer, mime: string, prompt: string, apiKey: string, opts?: GeminiOpts): Promise<Uint8Array> {
+  const gid = opts?.traceId || `gmi-${Date.now().toString(36)}`
+  const promptTrim = (prompt || '').toString()
+  const size = (bytes as ArrayBuffer).byteLength
+  if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:req', { gid, mode: 'single', promptLen: promptTrim.length, mime, bytes: size })
+  if (shouldLog('debug', opts?.logLevel)) log('debug', 'gemini:req:detail', { gid, promptSample: promptTrim.slice(0, 80) })
   const data = toBase64(bytes)
   const body = {
     contents: [
@@ -41,14 +52,16 @@ export async function transformImage(bytes: ArrayBuffer, mime: string, prompt: s
   const parts = json?.candidates?.[0]?.content?.parts || []
   const imagePart = parts.find((p: any) => p?.inline_data?.data) || parts.find((p: any) => p?.inlineData?.data)
   const outB64 = imagePart?.inline_data?.data || imagePart?.inlineData?.data
+  const finish = json?.candidates?.[0]?.finishReason || json?.candidates?.[0]?.finish_reason
+  const block = json?.promptFeedback?.blockReason || json?.prompt_feedback?.block_reason
+  const usage = json?.usageMetadata || json?.usage_metadata
+  const model = json?.modelVersion || json?.model_version
+  if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:res', { gid, status: res.status, gotImage: !!outB64, finishReason: finish || 'n/a', blockReason: block || 'n/a', model })
   if (!outB64) {
     // Extract diagnostics for easier debugging in logs/Slack
-    const finish = json?.candidates?.[0]?.finishReason || json?.candidates?.[0]?.finish_reason
-    const block = json?.promptFeedback?.blockReason || json?.prompt_feedback?.block_reason
     const textPart = parts.find((p: any) => typeof p?.text === 'string')
     const textSample = (textPart?.text || '').toString().slice(0, 200)
-    const usage = json?.usageMetadata || json?.usage_metadata
-    const model = json?.modelVersion || json?.model_version
+    if (shouldLog('error', opts?.logLevel)) logError('gemini:no_inline_image', new Error('no_inline_image'), { gid, httpStatus: res.status, finishReason: finish || 'n/a', blockReason: block || 'n/a', textPreview: textSample, model, usage })
     const detail = {
       reason: 'no_inline_image',
       httpStatus: res.status,
@@ -68,8 +81,14 @@ export async function transformImage(bytes: ArrayBuffer, mime: string, prompt: s
 export async function transformImagesCombined(
   images: { bytes: ArrayBuffer; mime: string }[],
   prompt: string,
-  apiKey: string
+  apiKey: string,
+  opts?: GeminiOpts
 ): Promise<Uint8Array> {
+  const gid = opts?.traceId || `gmi-${Date.now().toString(36)}`
+  const total = images.reduce((acc, i) => acc + (i.bytes as ArrayBuffer).byteLength, 0)
+  const promptTrim = (prompt || '').toString()
+  if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:req', { gid, mode: 'combined', images: images.length, promptLen: promptTrim.length, totalBytes: total })
+  if (shouldLog('debug', opts?.logLevel)) log('debug', 'gemini:req:detail', { gid, promptSample: promptTrim.slice(0, 80) })
   const parts: any[] = []
   for (const img of images) {
     parts.push({ inline_data: { mime_type: img.mime, data: toBase64(img.bytes) } })
@@ -89,16 +108,24 @@ export async function transformImagesCombined(
   const partsOut = json?.candidates?.[0]?.content?.parts || []
   const imagePart = partsOut.find((p: any) => p?.inline_data?.data) || partsOut.find((p: any) => p?.inlineData?.data)
   const outB64 = imagePart?.inline_data?.data || imagePart?.inlineData?.data
+  const finish = json?.candidates?.[0]?.finishReason || json?.candidates?.[0]?.finish_reason
+  const block = json?.promptFeedback?.blockReason || json?.prompt_feedback?.block_reason
+  const model = json?.modelVersion || json?.model_version
+  const usage = json?.usageMetadata || json?.usage_metadata
+  if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:res', { gid, status: res.status, gotImage: !!outB64, finishReason: finish || 'n/a', blockReason: block || 'n/a', model })
   if (!outB64) {
-    const finish = json?.candidates?.[0]?.finishReason || json?.candidates?.[0]?.finish_reason
-    const block = json?.promptFeedback?.blockReason || json?.prompt_feedback?.block_reason
+    if (shouldLog('error', opts?.logLevel)) logError('gemini:no_inline_image:combined', new Error('no_inline_image'), { gid, httpStatus: res.status, finishReason: finish || 'n/a', blockReason: block || 'n/a', model, usage })
     throw new Error(`Gemini combined request returned no image. detail=${JSON.stringify({ httpStatus: res.status, finishReason: finish, blockReason: block })}`)
   }
   return fromBase64(outB64 as string)
 }
 
 // Generate an image from text-only prompt (no input image)
-export async function generateImage(prompt: string, apiKey: string): Promise<Uint8Array> {
+export async function generateImage(prompt: string, apiKey: string, opts?: GeminiOpts): Promise<Uint8Array> {
+  const gid = opts?.traceId || `gmi-${Date.now().toString(36)}`
+  const promptTrim = (prompt || '').toString()
+  if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:req', { gid, mode: 'text-only', promptLen: promptTrim.length })
+  if (shouldLog('debug', opts?.logLevel)) log('debug', 'gemini:req:detail', { gid, promptSample: promptTrim.slice(0, 80) })
   const body = {
     contents: [ { parts: [ { text: prompt } ] } ],
     generationConfig: { responseModalities: ['IMAGE'] }
@@ -112,6 +139,14 @@ export async function generateImage(prompt: string, apiKey: string): Promise<Uin
   const parts = json?.candidates?.[0]?.content?.parts || []
   const imagePart = parts.find((p: any) => p?.inline_data?.data) || parts.find((p: any) => p?.inlineData?.data)
   const outB64 = imagePart?.inline_data?.data || imagePart?.inlineData?.data
+  const finish = json?.candidates?.[0]?.finishReason || json?.candidates?.[0]?.finish_reason
+  const block = json?.promptFeedback?.blockReason || json?.prompt_feedback?.block_reason
+  const model = json?.modelVersion || json?.model_version
+  const usage = json?.usageMetadata || json?.usage_metadata
+  if (shouldLog('info', opts?.logLevel)) log('info', 'gemini:res', { gid, status: res.status, gotImage: !!outB64, finishReason: finish || 'n/a', blockReason: block || 'n/a', model })
+  if (!outB64) {
+    if (shouldLog('error', opts?.logLevel)) logError('gemini:no_inline_image:text', new Error('no_inline_image'), { gid, httpStatus: res.status, finishReason: finish || 'n/a', blockReason: block || 'n/a', model, usage })
+  }
   if (!outB64) throw new Error('Gemini did not return an image (text-only generation).')
   return fromBase64(outB64 as string)
 }

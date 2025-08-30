@@ -72,11 +72,9 @@ const processSlackEvent = async (event: any, env: Env, payload?: any): Promise<v
   const token = env.SLACK_BOT_TOKEN
   if (!token) { log('error' as any, 'missing:SLACK_BOT_TOKEN'); return }
 
-  // Dedupe by Slack event_id and by (channel:ts)
+  // Dedupe by Slack event_id early; cts-dedupe is applied later per-event-type
   const eid = (payload && (payload as any).event_id) as string | undefined
   if (eid && (await dedupeSeen(env, `eid:${eid}`))) { if (shouldLog('debug', env.LOG_LEVEL)) log('debug', 'dedupe:skip', { eid }) ; return }
-  const keyTs = event?.channel && event?.ts ? `cts:${event.channel}:${event.ts}` : undefined
-  if (keyTs && (await dedupeSeen(env, keyTs))) { if (shouldLog('debug', env.LOG_LEVEL)) log('debug', 'dedupe:skip', { keyTs }) ; return }
 
   const botUserId = extractBotUserId(payload)
   const process = await shouldProcess(event, botUserId, token)
@@ -101,31 +99,18 @@ const processSlackEvent = async (event: any, env: Env, payload?: any): Promise<v
     const current_ts = event.ts as string | undefined
     const prompt = (event.text as string | undefined) || ''
 
+    // Apply channel:ts dedupe only when we actually intend to process this event type.
+    // This avoids app_mention-with-files preempting the message event for the same post.
+    const keyTs = channel && current_ts ? `cts:${channel}:${current_ts}` : undefined
+    if (keyTs && (await dedupeSeen(env, keyTs))) { if (shouldLog('debug', env.LOG_LEVEL)) log('debug', 'dedupe:skip', { keyTs }) ; return }
+
     if (channel && root_ts) {
       // Reaction indicators on both the current message and the thread root
       const rname = (env as any).REACTION_NAME || 'banana'
       try { if (current_ts) await slackApi('reactions.add', token, { channel, name: rname, timestamp: current_ts }) } catch (e) { logError('reactions.add:failed', e) }
       try { if (root_ts && root_ts !== current_ts) await slackApi('reactions.add', token, { channel, name: rname, timestamp: root_ts }) } catch (e) { logError('reactions.add:failed', e) }
 
-      // Prefer previously generated bot image in this thread when a prompt text is provided,
-      // even if current message has additional images attached.
-      const hasPrompt = (prompt || '').trim().length > 0
-      if (hasPrompt) {
-        const prev = await listPreviousBotImage(channel, root_ts, token, botUserId)
-        if (prev) {
-          if (shouldLog('info', env.LOG_LEVEL)) log('info', 'prev_image:found', { name: prev.name, mime: prev.mime })
-          try {
-            await processBatchImages([prev], token, env, { channel, thread_ts: root_ts, prompt })
-          } catch (e) {
-            logError('processBatchImages:failed(prev)', e)
-            const reason = e instanceof Error ? e.message : 'unknown error'
-            try { await slackApi('chat.postMessage', token, { channel, thread_ts: root_ts, text: `🍌 Failed to generate images: ${reason}` }) } catch (_) {}
-          }
-          return
-        }
-      }
-
-      // Otherwise, collect images from the current message only and process as before
+      // Collect images from the current message
       const current: { url: string, name: string, mime: string }[] = []
       if (Array.isArray(event.files)) {
         for (const f of event.files) {
@@ -138,6 +123,28 @@ const processSlackEvent = async (event: any, env: Env, payload?: any): Promise<v
       const seen = new Set<string>()
       const targets = current.filter(it => { if (seen.has(it.url)) return false; seen.add(it.url); return true })
       if (shouldLog('info', env.LOG_LEVEL)) log('info', 'images:collected', { current: current.length, total: targets.length })
+
+      // Prefer: when there is a prompt and we can find a previous bot image in the thread,
+      // use BOTH the previous image and any newly attached images as inputs (combined request).
+      const hasPrompt = (prompt || '').trim().length > 0
+      if (hasPrompt) {
+        const prev = await listPreviousBotImage(channel, root_ts, token, botUserId)
+        if (prev) {
+          const combined = [prev, ...targets]
+          // De-dupe by URL across prev + current
+          const s = new Set<string>()
+          const inputs = combined.filter(it => { if (s.has(it.url)) return false; s.add(it.url); return true })
+          if (shouldLog('info', env.LOG_LEVEL)) log('info', 'inputs:combined', { prev: true, current: targets.length, total: inputs.length })
+          try {
+            await processBatchImages(inputs, token, env, { channel, thread_ts: root_ts, prompt })
+          } catch (e) {
+            logError('processBatchImages:failed(combined)', e)
+            const reason = e instanceof Error ? e.message : 'unknown error'
+            try { await slackApi('chat.postMessage', token, { channel, thread_ts: root_ts, text: `🍌 Failed to generate images: ${reason}` }) } catch (_) {}
+          }
+          return
+        }
+      }
 
       if (targets.length === 0) {
         // No images and no previous bot image usable
@@ -229,7 +236,7 @@ const echoOrTransformImage = async (job: EchoJob, token: string, env: Env) => {
   // 2) Optional: transform via Gemini if key is present
   const key = (env as any).GEMINI_API_KEY as string | undefined
   const prompt = (job.prompt || '').trim()
-  const out = key && prompt ? await transformImage(bytes, job.mime, prompt, key) : new Uint8Array(bytes)
+  const out = key && prompt ? await transformImage(bytes, job.mime, prompt, key, { logLevel: env.LOG_LEVEL }) : new Uint8Array(bytes)
   if (shouldLog('info', env.LOG_LEVEL)) log('info', 'gemini:done', { transformed: key && !!prompt, outBytes: out.byteLength })
 
   // 3) Request external upload URL
@@ -282,9 +289,9 @@ const processBatchImages = async (
   let out: Uint8Array
   try {
     if (key && prompt && inputs.length > 1) {
-      out = await transformImagesCombined(inputs.map(i => ({ bytes: i.bytes, mime: i.mime })), prompt, key)
+      out = await transformImagesCombined(inputs.map(i => ({ bytes: i.bytes, mime: i.mime })), prompt, key, { logLevel: env.LOG_LEVEL })
     } else if (key && prompt) {
-      out = await transformImage(first.bytes, first.mime, prompt, key)
+      out = await transformImage(first.bytes, first.mime, prompt, key, { logLevel: env.LOG_LEVEL })
     } else {
       out = new Uint8Array(first.bytes)
     }
