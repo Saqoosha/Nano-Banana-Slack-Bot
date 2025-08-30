@@ -28,8 +28,7 @@ A minimal Slack bot that echoes posted images as file attachments via Events API
 - Direct messages (`IM`) to the bot are always processed.
 - Also processes `app_mention` events directly.
 - If the current message has no image:
-  - If you reply with text in a thread, the bot reuses the latest bot-posted image in that thread, applies your text as the prompt, and posts the new image (no extra text/comment added).
-  - Even if your reply contains additional images, the bot still uses the previously generated image as the input when text is present.
+  - If you reply with text in a thread, the bot reuses the latest bot-posted image in that thread AND any newly attached images as inputs in a single Gemini call, then posts ONE combined output image (no extra text/comment added).
   - If no prior bot image exists, it replies with guidance.
 
 ## Endpoints
@@ -39,10 +38,14 @@ A minimal Slack bot that echoes posted images as file attachments via Events API
 
 ## Notes
 
-- This scaffold validates Slack signatures in the Workers runtime.
-- Posts with images trigger an async echo: the bot downloads the image and re-uploads it as a file attachment to the same channel (thread-aware).
-- To implement real editing with Gemini, this bot calls `gemini-2.5-flash-image-preview` via Generative Language API. If the post text contains a prompt, it is passed through verbatim to the model; if there is no text, the image is echoed without transformation.
- - Debug: set `GEMINI_DEBUG=true` (vars/secrets) to upload a small `gemini-debug-*.json` file in the thread on failures with details (finishReason, blockReason, etc.).
+- Signature verification: HMAC (v0) with timing-safe compare AND ±300s timestamp freshness window.
+- Images: The bot downloads from Slack private URLs and uploads results via `files.getUploadURLExternal` → `files.completeUploadExternal` (explicit `image/png`).
+- Gemini calls:
+  - Prompt sanitation removes Slack markup (mentions/links/channels) and appends a small instruction: "出力は画像のみ。" (image-only output).
+  - Combined path sends multiple input images in a single request and expects ONE output image.
+  - If `responseModalities=['IMAGE']` returns no image, a single fallback retry is executed with `['TEXT','IMAGE']`.
+  - Correlation id (gid) is logged; on failures the thread receives a short error with gid.
+- Debug: set `GEMINI_DEBUG=true` (vars/secrets) to upload a small `gemini-debug-*.json` file in the thread on failures (includes finishReason, blockReason, etc.).
 
 
 ### About .env/.dev.vars
@@ -52,9 +55,24 @@ A minimal Slack bot that echoes posted images as file attachments via Events API
 ## Project Layout
 
 - `src/worker.ts` — Worker entry and routing
-- `src/slack.ts` — Slack helpers (signature, forms, JSON)
-  
+- `src/slack.ts` — Slack helpers (signature, forms, JSON, text sanitization, image-only enforcement)
+
 - `slack-app-manifest.yaml` — Slack app manifest (Create App from manifest)
+
+## Local Gemini Checker
+
+Run a single-call, two-image local check (same pattern as production):
+
+```bash
+# Reads GEMINI_API_KEY from env or .dev.env/.dev.vars
+bun run gemini:check-two /path/to/a.png /path/to/b.png "your prompt" ./out.png
+```
+
+The script uses text-first parts, requests `['IMAGE']` and falls back once to `['TEXT','IMAGE']` if no image is returned.
+
+## System Architecture
+
+See docs/architecture.md for component overview, data flow, and sequence diagrams.
 
 ## Create Slack App from Manifest
 1) Open https://api.slack.com/apps → Create New App → From an app manifest.

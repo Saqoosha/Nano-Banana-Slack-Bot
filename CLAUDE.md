@@ -45,9 +45,12 @@ bun run logs:stop   # Stop log tail
 - **src/log.ts**: Structured logging utilities
 
 ### Key Features
-- **Event Processing**: Validates Slack signatures, handles `message` and `app_mention` events
+- **Event Processing**: Validates Slack signatures (v0 HMAC + ±300s freshness), handles `message` and `app_mention` events
 - **Deduplication**: Uses Cloudflare KV (`nano_banana_dedup`) to prevent duplicate processing
-- **Image Handling**: Downloads images from Slack, transforms via Gemini (if prompt provided), uploads results back
+- **Prompt Prep**: Sanitizes Slack markup and appends a small instruction to request image-only output
+- **Image Handling**: Downloads images from Slack, transforms via Gemini, uploads results back (explicit `image/png`)
+- **Multi-image**: Sends multiple input images in a single Gemini call; expects ONE output image (combined)
+- **Fallback**: If `['IMAGE']` returns no image, retries once with `['TEXT','IMAGE']`
 - **Thread Awareness**: Maintains conversation context in Slack threads
 
 ## Environment Setup
