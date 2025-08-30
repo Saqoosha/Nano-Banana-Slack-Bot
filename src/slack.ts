@@ -58,3 +58,24 @@ export const verifySlackSignature = async (env: Env, request: Request, body: str
 }
 
 export const parseForm = (body: string) => new URLSearchParams(body)
+
+// Remove Slack-specific markup from text to make prompts model-friendly.
+// - Converts <url|label> to label
+// - Removes user mentions <@U...> and other angle-bracket tokens
+// - Collapses whitespace
+export const sanitizeSlackText = (text: string, botUserId?: string): string => {
+  let s = (text || '').toString()
+  // Replace links like <http://example|label> -> label
+  s = s.replace(/<[^>|]+\|([^>]+)>/g, '$1')
+  // Remove user mentions like <@U12345>
+  s = s.replace(/<@[^>]+>/g, '')
+  // Remove channel mentions like <#C12345|channel>
+  s = s.replace(/<#([^>|]+)(\|[^>]+)?>/g, '')
+  // Remove remaining bracketed tokens like <mailto:...> or <http:...>
+  s = s.replace(/<[^>]+>/g, '')
+  // If botUserId is provided, also remove plain mentions like @name variants just in case
+  if (botUserId) s = s.replace(new RegExp(`<@${botUserId}>`, 'g'), '')
+  // Collapse whitespace
+  s = s.replace(/\s+/g, ' ').trim()
+  return s
+}

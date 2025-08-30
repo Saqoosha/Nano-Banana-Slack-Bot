@@ -1,7 +1,7 @@
 // Entry for Cloudflare Workers Slack bot
 // Comments in English. Keep implementation minimal (YAGNI).
 
-import { badRequest, ok, readRawBody, textJson, verifySlackSignature, type Env } from './slack'
+import { badRequest, ok, readRawBody, textJson, verifySlackSignature, sanitizeSlackText, type Env } from './slack'
 import { log, logError, shouldLog } from './log'
 import { transformImage, transformImagesCombined } from './gemini'
 
@@ -97,7 +97,7 @@ const processSlackEvent = async (event: any, env: Env, payload?: any): Promise<v
     const channel = event.channel as string | undefined
     const root_ts = (event.thread_ts as string | undefined) || (event.ts as string | undefined)
     const current_ts = event.ts as string | undefined
-    const prompt = (event.text as string | undefined) || ''
+    const prompt = sanitizeSlackText((event.text as string | undefined) || '', botUserId)
 
     // Apply channel:ts dedupe only when we actually intend to process this event type.
     // This avoids app_mention-with-files preempting the message event for the same post.
