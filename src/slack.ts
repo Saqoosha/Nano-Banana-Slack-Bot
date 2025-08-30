@@ -50,6 +50,11 @@ export const verifySlackSignature = async (env: Env, request: Request, body: str
   const ts = request.headers.get('x-slack-request-timestamp') || ''
   const sig = request.headers.get('x-slack-signature') || ''
   if (!ts || !sig) return false
+  // Freshness check (±300s) to prevent replay attacks
+  const now = Math.floor(Date.now() / 1000)
+  const t = parseInt(ts, 10)
+  if (!Number.isFinite(t)) return false
+  if (Math.abs(now - t) > 300) return false
   const base = `v0:${ts}:${body}`
   const digest = await hmac256(env.SLACK_SIGNING_SECRET, base)
   const expected = `v0=${digest}`

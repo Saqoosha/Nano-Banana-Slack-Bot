@@ -158,7 +158,10 @@ const processSlackEvent = async (event: any, env: Env, payload?: any): Promise<v
       } catch (e) {
         logError('processBatchImages:failed', e)
         const reason = e instanceof Error ? e.message : 'unknown error'
-        try { await slackApi('chat.postMessage', token, { channel, thread_ts: root_ts, text: `🍌 Failed to generate images: ${reason}` }) } catch (_) {}
+        // Skip notifying if processBatchImages already posted with gid
+        if (!(e as any)._notified) {
+          try { await slackApi('chat.postMessage', token, { channel, thread_ts: root_ts, text: `🍌 Failed to generate images: ${reason}` }) } catch (_) {}
+        }
       }
       return
     }
@@ -272,6 +275,7 @@ const processBatchImages = async (
 ) => {
   const key = (env as any).GEMINI_API_KEY as string | undefined
   const prompt = (opts.prompt || '').trim()
+  const gid = `gmi-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 
   // 1) Download all images first
   const inputs: { bytes: ArrayBuffer; mime: string; name: string }[] = []
@@ -289,9 +293,9 @@ const processBatchImages = async (
   let out: Uint8Array
   try {
     if (key && prompt && inputs.length > 1) {
-      out = await transformImagesCombined(inputs.map(i => ({ bytes: i.bytes, mime: i.mime })), prompt, key, { logLevel: env.LOG_LEVEL })
+      out = await transformImagesCombined(inputs.map(i => ({ bytes: i.bytes, mime: i.mime })), prompt, key, { logLevel: env.LOG_LEVEL, traceId: gid })
     } else if (key && prompt) {
-      out = await transformImage(first.bytes, first.mime, prompt, key, { logLevel: env.LOG_LEVEL })
+      out = await transformImage(first.bytes, first.mime, prompt, key, { logLevel: env.LOG_LEVEL, traceId: gid })
     } else {
       out = new Uint8Array(first.bytes)
     }
@@ -302,6 +306,9 @@ const processBatchImages = async (
       const debug = JSON.stringify({ names: items.map(i => i.name), prompt, error: reason }, null, 2)
       try { await uploadTextDebug(opts.channel, token, debug, opts.thread_ts) } catch (_) {}
     }
+    // Notify in thread with correlation id
+    try { await slackApi('chat.postMessage', token, { channel: opts.channel, thread_ts: opts.thread_ts || '', text: `🍌 Failed to generate images (gid: ${gid})` }) } catch (_) {}
+    ;(e as any)._notified = true
     throw e
   }
 
@@ -312,8 +319,8 @@ const processBatchImages = async (
   const ab = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength)
   const form = new FormData()
   const a8 = new Uint8Array(ab as ArrayBuffer)
-  const firstMime = (items[0]?.mime || 'application/octet-stream')
-  form.append('filename', new Blob([a8], { type: firstMime }), outName)
+  // Output is PNG from Gemini; use explicit MIME
+  form.append('filename', new Blob([a8], { type: 'image/png' }), outName)
   const up = await fetch(meta.upload_url as string, { method: 'POST', body: form })
   if (!up.ok) throw new Error(`upload failed status=${up.status}`)
 
