@@ -4,6 +4,10 @@ node_modules/
 
 # Cloudflare
 .wrangler/
+.logs/
+
+# Artifacts
+gemini-out.png
 
 # Local env
 .dev.vars
