@@ -1,9 +1,10 @@
 // Entry for Cloudflare Workers Slack bot
 // Comments in English. Keep implementation minimal (YAGNI).
 
-import { badRequest, ok, readRawBody, textJson, verifySlackSignature, sanitizeSlackText, enforceImageOnly, type Env } from './slack'
+import { badRequest, ok, readRawBody, textJson, verifySlackSignature, sanitizeSlackText, type Env } from './slack'
 import { log, logError, shouldLog } from './log'
 import { transformImage, transformImagesCombined } from './gemini'
+import { detectLanguageAndTranslate } from './translate'
 
 const routes = {
   health: new URLPattern({ pathname: '/healthz' }),
@@ -97,7 +98,24 @@ const processSlackEvent = async (event: any, env: Env, payload?: any): Promise<v
     const channel = event.channel as string | undefined
     const root_ts = (event.thread_ts as string | undefined) || (event.ts as string | undefined)
     const current_ts = event.ts as string | undefined
-    const prompt = enforceImageOnly(sanitizeSlackText((event.text as string | undefined) || '', botUserId))
+    const rawPrompt = sanitizeSlackText((event.text as string | undefined) || '', botUserId)
+    let prompt = ''            // for display (initial_comment)
+    let genPrompt = ''         // for Gemini generation (may include original + translation)
+    if ((rawPrompt || '').trim().length > 0) {
+      const key = (env as any).GEMINI_API_KEY as string | undefined
+      if (key) {
+        const r = await detectLanguageAndTranslate(rawPrompt, key, env.LOG_LEVEL)
+        const english = r.isEnglish ? rawPrompt : r.translation
+        prompt = english
+        genPrompt = r.isEnglish ? english : `${rawPrompt}\n${english}`
+      } else {
+        // No translation: use original for both
+        prompt = rawPrompt
+        genPrompt = rawPrompt
+      }
+      // Append image-only constraint ONLY to the API-bound prompt
+      if (genPrompt.trim().length > 0) genPrompt = `${genPrompt}\nOutput image only.`
+    }
 
     // Apply channel:ts dedupe only when we actually intend to process this event type.
     // This avoids app_mention-with-files preempting the message event for the same post.
@@ -136,7 +154,7 @@ const processSlackEvent = async (event: any, env: Env, payload?: any): Promise<v
           const inputs = combined.filter(it => { if (s.has(it.url)) return false; s.add(it.url); return true })
           if (shouldLog('info', env.LOG_LEVEL)) log('info', 'inputs:combined', { prev: true, current: targets.length, total: inputs.length })
           try {
-            await processBatchImages(inputs, token, env, { channel, thread_ts: root_ts, prompt })
+            await processBatchImages(inputs, token, env, { channel, thread_ts: root_ts, prompt, genPrompt })
           } catch (e) {
             logError('processBatchImages:failed(combined)', e)
             const reason = e instanceof Error ? e.message : 'unknown error'
@@ -154,7 +172,7 @@ const processSlackEvent = async (event: any, env: Env, payload?: any): Promise<v
       }
 
       try {
-        await processBatchImages(targets, token, env, { channel, thread_ts: root_ts, prompt })
+        await processBatchImages(targets, token, env, { channel, thread_ts: root_ts, prompt, genPrompt })
       } catch (e) {
         logError('processBatchImages:failed', e)
         const reason = e instanceof Error ? e.message : 'unknown error'
@@ -227,54 +245,18 @@ const listPreviousBotImage = async (channel: string, ts: string, token: string, 
   return null
 }
 
-type EchoJob = { url: string; name: string; mime: string; channel: string; thread_ts?: string; prompt?: string }
-
-const echoOrTransformImage = async (job: EchoJob, token: string, env: Env) => {
-  // 1) Download original image from Slack
-  const res = await fetch(job.url, { headers: { Authorization: `Bearer ${token}` } })
-  if (!res.ok) { log('error' as any, 'download:image:not_ok', { status: res.status }); return }
-  const bytes = await res.arrayBuffer()
-  if (shouldLog('debug', env.LOG_LEVEL)) log('debug', 'download:image', { ok: res.ok, status: res.status, size: (bytes as ArrayBuffer).byteLength })
-
-  // 2) Optional: transform via Gemini if key is present
-  const key = (env as any).GEMINI_API_KEY as string | undefined
-  const prompt = (job.prompt || '').trim()
-  const out = key && prompt ? await transformImage(bytes, job.mime, prompt, key, { logLevel: env.LOG_LEVEL }) : new Uint8Array(bytes)
-  if (shouldLog('info', env.LOG_LEVEL)) log('info', 'gemini:done', { transformed: key && !!prompt, outBytes: out.byteLength })
-
-  // 3) Request external upload URL
-  const meta = await slackApi('files.getUploadURLExternal', token, { filename: job.name, length: `${out.byteLength}` })
-  if (!meta.ok) { log('error' as any, 'slack:getUploadURLExternal:not_ok', { meta }); return }
-  if (shouldLog('debug', env.LOG_LEVEL)) log('debug', 'slack:getUploadURLExternal', { file_id: meta.file_id })
-
-  // 4) Upload bytes via multipart/form-data POST per Slack docs (field name must be `filename`).
-  const ab = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength)
-  const form = new FormData()
-  const a8 = new Uint8Array(ab as ArrayBuffer)
-  form.append('filename', new Blob([a8], { type: job.mime || 'application/octet-stream' }), job.name)
-  const up = await fetch(meta.upload_url as string, { method: 'POST', body: form })
-  if (!up.ok) { log('error' as any, 'slack:upload:post:not_ok', { status: up.status }); return }
-  if (shouldLog('debug', env.LOG_LEVEL)) log('debug', 'slack:upload:ok', { status: up.status })
-
-  // 5) Complete upload and share to channel (optionally in thread)
-  const payload: Record<string, string> = {
-    files: JSON.stringify([{ id: meta.file_id as string, title: job.name }]),
-    channel_id: job.channel
-  }
-  if (job.thread_ts) payload.thread_ts = job.thread_ts
-  await slackApi('files.completeUploadExternal', token, payload)
-  if (shouldLog('info', env.LOG_LEVEL)) log('info', 'slack:completeUploadExternal', { channel: job.channel })
-}
+// (legacy echo path removed; batch path below handles uploads)
 
 // Batch path: uploads all images and completes in ONE message
 const processBatchImages = async (
   items: { url: string; name: string; mime: string }[],
   token: string,
   env: Env,
-  opts: { channel: string; thread_ts?: string; prompt?: string }
+  opts: { channel: string; thread_ts?: string; prompt?: string; genPrompt?: string }
 ) => {
   const key = (env as any).GEMINI_API_KEY as string | undefined
   const prompt = (opts.prompt || '').trim()
+  const genPrompt = (opts.genPrompt || opts.prompt || '').trim()
   const gid = `gmi-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 
   // 1) Download all images first
@@ -292,10 +274,10 @@ const processBatchImages = async (
   const first = inputs[0]!
   let out: Uint8Array
   try {
-    if (key && prompt && inputs.length > 1) {
-      out = await transformImagesCombined(inputs.map(i => ({ bytes: i.bytes, mime: i.mime })), prompt, key, { logLevel: env.LOG_LEVEL, traceId: gid })
-    } else if (key && prompt) {
-      out = await transformImage(first.bytes, first.mime, prompt, key, { logLevel: env.LOG_LEVEL, traceId: gid })
+    if (key && genPrompt && inputs.length > 1) {
+      out = await transformImagesCombined(inputs.map(i => ({ bytes: i.bytes, mime: i.mime })), genPrompt, key, { logLevel: env.LOG_LEVEL, traceId: gid })
+    } else if (key && genPrompt) {
+      out = await transformImage(first.bytes, first.mime, genPrompt, key, { logLevel: env.LOG_LEVEL, traceId: gid })
     } else {
       out = new Uint8Array(first.bytes)
     }
@@ -307,7 +289,11 @@ const processBatchImages = async (
       try { await uploadTextDebug(opts.channel, token, debug, opts.thread_ts) } catch (_) {}
     }
     // Notify in thread with correlation id
-    try { await slackApi('chat.postMessage', token, { channel: opts.channel, thread_ts: opts.thread_ts || '', text: `🍌 Failed to generate images (gid: ${gid})` }) } catch (_) {}
+    try {
+      const msg: Record<string, string> = { channel: opts.channel, text: `🍌 Failed to generate images (gid: ${gid})` }
+      if (opts.thread_ts) msg.thread_ts = opts.thread_ts
+      await slackApi('chat.postMessage', token, msg)
+    } catch (_) {}
     ;(e as any)._notified = true
     throw e
   }
@@ -329,6 +315,9 @@ const processBatchImages = async (
     channel_id: opts.channel
   }
   if (opts.thread_ts) payload.thread_ts = opts.thread_ts
+  // initial_comment: exactly the string sent to Gemini (genPrompt)
+  const used2 = (opts.genPrompt || opts.prompt || '').trim()
+  if (used2.length > 0) (payload as any).initial_comment = used2
   await slackApi('files.completeUploadExternal', token, payload)
   if (shouldLog('info', env.LOG_LEVEL)) log('info', 'slack:completeUploadExternal', { channel: opts.channel, count: 1 })
 }

@@ -85,10 +85,4 @@ export const sanitizeSlackText = (text: string, botUserId?: string): string => {
 }
 
 // Ensure prompt explicitly asks for image-only output to stabilize responses
-export const enforceImageOnly = (text: string): string => {
-  const t = (text || '').toString().trim()
-  const ja = '出力は画像のみ。'
-  if (t.includes(ja)) return t
-  if (/image\s*only/i.test(t)) return t
-  return t.length > 0 ? `${t} ${ja}` : ja
-}
+// (deprecated) image-only enforcement helper was removed from runtime usage

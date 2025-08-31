@@ -40,12 +40,19 @@ A minimal Slack bot that echoes posted images as file attachments via Events API
 
 - Signature verification: HMAC (v0) with timing-safe compare AND ±300s timestamp freshness window.
 - Images: The bot downloads from Slack private URLs and uploads results via `files.getUploadURLExternal` → `files.completeUploadExternal` (explicit `image/png`).
+- For each output image, the bot attaches an `initial_comment` that contains only the prompt actually sent to Gemini (i.e., the used prompt). No original/translation text is added.
 - Gemini calls:
-  - Prompt sanitation removes Slack markup (mentions/links/channels) and appends a small instruction: "出力は画像のみ。" (image-only output).
+- Prompt sanitation removes Slack markup (mentions/links/channels).
+- For generation only, the Worker appends a short constraint to the prompt:
+  `Output image only.` (this goes to the API and appears in the initial_comment, which mirrors the exact sent prompt).
   - Combined path sends multiple input images in a single request and expects ONE output image.
   - If `responseModalities=['IMAGE']` returns no image, a single fallback retry is executed with `['TEXT','IMAGE']`.
   - Correlation id (gid) is logged; on failures the thread receives a short error with gid.
 - Debug: set `GEMINI_DEBUG=true` (vars/secrets) to upload a small `gemini-debug-*.json` file in the thread on failures (includes finishReason, blockReason, etc.).
+ 
+### Translation & Language Detection
+- A utility for language detection/translation using Gemini 2.5 Flash‑Lite (`gemini-2.5-flash-lite`) with Structured Output is included (`src/translate.ts`).
+- The upload `initial_comment` shows only the exact prompt used for generation.
 
 
 ### About .env/.dev.vars
