@@ -27,9 +27,10 @@ A minimal Slack bot that echoes posted images as file attachments via Events API
 - Processes only when the bot is mentioned in the message (`<@bot>`), or when replying in the thread of a message that mentioned the bot.
 - Direct messages (`IM`) to the bot are always processed.
 - Also processes `app_mention` events directly.
-- If the current message has no image:
-  - If you reply with text in a thread, the bot reuses the latest bot-posted image in that thread AND any newly attached images as inputs in a single Gemini call, then posts ONE combined output image (no extra text/comment added).
-  - If no prior bot image exists, it replies with guidance.
+- If the current message has images attached, those images are used as inputs. If there is a prior bot image in the thread and a prompt is present, the bot combines the prior image and the new attachments into a single Gemini request and posts ONE output image.
+- If there are no images:
+  - If a text prompt is present, the bot now generates an image from the text-only prompt and posts it as a file (with the exact prompt as `initial_comment`).
+  - If no prompt is present, the bot replies with guidance.
 
 ## Endpoints
 

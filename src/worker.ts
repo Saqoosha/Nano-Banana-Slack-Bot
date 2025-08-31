@@ -3,7 +3,7 @@
 
 import { badRequest, ok, readRawBody, textJson, verifySlackSignature, sanitizeSlackText, type Env } from './slack'
 import { log, logError, shouldLog } from './log'
-import { transformImage, transformImagesCombined } from './gemini'
+import { transformImage, transformImagesCombined, generateImage } from './gemini'
 import { detectLanguageAndTranslate } from './translate'
 
 const routes = {
@@ -166,7 +166,44 @@ const processSlackEvent = async (event: any, env: Env, payload?: any): Promise<v
 
       if (targets.length === 0) {
         // No images and no previous bot image usable
-        try { await slackApi('chat.postMessage', token, { channel, thread_ts: root_ts, text: '🍌 No image found. Reply with text to a bot image in this thread, or attach an image.' }) } catch (_) {}
+        const hasPromptOnly = (genPrompt || '').trim().length > 0
+        const apiKey = (env as any).GEMINI_API_KEY as string | undefined
+        if (hasPromptOnly && apiKey && channel) {
+          const gid = `gmi-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+          try {
+            const out = await generateImage(genPrompt, apiKey, { logLevel: env.LOG_LEVEL, traceId: gid })
+            // Upload generated image
+            const outName = `image-${Date.now()}.png`
+            const meta = await slackApi('files.getUploadURLExternal', token, { filename: outName, length: `${out.byteLength}` })
+            if (!meta.ok) throw new Error('getUploadURLExternal failed')
+            const ab = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength)
+            const a8 = new Uint8Array(ab as ArrayBuffer)
+            const form = new FormData()
+            form.append('filename', new Blob([a8], { type: 'image/png' }), outName)
+            const up = await fetch(meta.upload_url as string, { method: 'POST', body: form })
+            if (!up.ok) throw new Error(`upload failed status=${up.status}`)
+            const payload: Record<string, string> = {
+              files: JSON.stringify([{ id: meta.file_id as string, title: outName }]),
+              channel_id: channel
+            }
+            if (root_ts) payload.thread_ts = root_ts
+            const used = (genPrompt || prompt || '').trim()
+            if (used.length > 0) (payload as any).initial_comment = used
+            await slackApi('files.completeUploadExternal', token, payload)
+            if (shouldLog('info', env.LOG_LEVEL)) log('info', 'slack:completeUploadExternal', { channel, count: 1, mode: 'text-only' })
+          } catch (e) {
+            logError('text_only_generation:failed', e)
+            if ((env as any).GEMINI_DEBUG && channel) {
+              const reason = e instanceof Error ? e.message : String(e)
+              const debug = JSON.stringify({ prompt, error: reason }, null, 2)
+              try { await uploadTextDebug(channel, token, debug, root_ts) } catch (_) {}
+            }
+            try { await slackApi('chat.postMessage', token, { channel, thread_ts: root_ts, text: '🍌 Failed to generate image from text prompt.' }) } catch (_) {}
+          }
+          return
+        }
+
+        try { await slackApi('chat.postMessage', token, { channel, thread_ts: root_ts, text: '🍌 No image found. Send a text prompt or attach an image.' }) } catch (_) {}
         if (shouldLog('info', env.LOG_LEVEL)) log('info', 'no_images_guided', { channel })
         return
       }
